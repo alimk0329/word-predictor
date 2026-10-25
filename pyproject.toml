@@ -1,0 +1,18 @@
+[project]
+name = "text-classifier"
+version = "0.1.0"
+description = "TF-IDF, Multinomial Naive Bayes and softmax regression from scratch in NumPy, with a live suggestion dashboard"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["numpy==2.3.5", "scipy==1.16.3"]
+
+[project.optional-dependencies]
+dev = ["pytest==9.0.2", "scikit-learn==1.7.2"]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

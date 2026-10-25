@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Topic Suggest</title>
+<style>
+  :root {
+    color-scheme: light;
+    --surface: #fcfcfb; --card: #ffffff; --border: #dddcd7; --text: #0b0b0b; --text-2: #52514e; --muted: #8a8984;
+    --accent: #2a78d6; --track: #e3edf9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --surface: #1a1a19; --card: #222220; --border: #3a3936; --text: #f0efec; --text-2: #c3c2b7; --muted: #8f8e86;
+      --accent: #3987e5; --track: #25334a;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface: #1a1a19; --card: #222220; --border: #3a3936; --text: #f0efec; --text-2: #c3c2b7; --muted: #8f8e86;
+    --accent: #3987e5; --track: #25334a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--surface); color: var(--text); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 40px 16px 64px; }
+  h1 { font-size: 1.5rem; font-weight: 650; margin: 0 0 4px; }
+  .sub { color: var(--text-2); margin: 0 0 20px; }
+  h2 { font-size: .8rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-2); margin: 28px 0 10px; }
+  .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+  /* The ghost layer sits under a transparent textarea and must lay text out identically. */
+  .editor { position: relative; background: var(--card); border: 1px solid var(--border); border-radius: 10px; }
+  .editor:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); }
+  .editor textarea, .ghost {
+    display: block; width: 100%; margin: 0; border: 0; padding: 14px 16px;
+    font: 18px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; letter-spacing: normal;
+    white-space: pre-wrap; overflow-wrap: break-word; tab-size: 4;
+  }
+  .ghost { position: absolute; inset: 0; color: transparent; pointer-events: none; overflow: hidden; }
+  .ghost .hint { color: var(--muted); }
+  .editor textarea { position: relative; min-height: 136px; resize: none; overflow: hidden; background: transparent; color: var(--text); outline: none; }
+
+  .words { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 36px; margin: 12px 0 0; padding: 0; list-style: none; }
+  .words li { display: inline-flex; align-items: center; gap: 8px; padding: 4px 12px; border: 1px solid var(--border); border-radius: 999px; background: var(--card); }
+  .words li.top { border-color: var(--accent); }
+  .words li.empty { border: 0; background: none; padding-left: 0; color: var(--muted); }
+  .pct { color: var(--text-2); font-variant-numeric: tabular-nums; }
+  kbd { font: 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 3px 6px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; color: var(--text-2); }
+
+  .topics { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+  .topics li { display: grid; grid-template-columns: minmax(0, 14rem) 1fr 3.5rem; align-items: center; gap: 12px; }
+  .topics li:first-child .label { font-weight: 600; }
+  .topics .label { overflow-wrap: anywhere; }
+  .topics .pct { text-align: right; }
+  .topics.dim { opacity: .55; }
+  .track { height: 12px; background: var(--track); border-radius: 0 4px 4px 0; }
+  .bar { display: block; height: 100%; background: var(--accent); border-radius: 0 4px 4px 0; }
+  .status { margin-top: 20px; font-size: 14px; color: var(--muted); }
+  @media (max-width: 520px) {
+    .topics li { grid-template-columns: 1fr 3.5rem; row-gap: 4px; }
+    .topics .label { grid-column: 1 / -1; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Topic &amp; word suggestions</h1>
+  <p class="sub" id="help">Type anything. <kbd>Tab</kbd> accepts the grey word. Percentages are calibrated probabilities from a NumPy model trained on 20 Newsgroups.</p>
+
+  <label class="visually-hidden" for="text">Your text</label>
+  <div class="editor">
+    <div class="ghost" aria-hidden="true"><span id="typed"></span><span class="hint" id="hint"></span></div>
+    <textarea id="text" spellcheck="false" autocomplete="off" autofocus aria-describedby="help"
+      placeholder="e.g. the shuttle crew reached orb"></textarea>
+  </div>
+
+  <h2>Next word</h2>
+  <ul class="words" id="words" aria-live="polite"></ul>
+
+  <h2>Topic</h2>
+  <ul class="topics" id="topics"></ul>
+  <p class="status" id="status"></p>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const ta = $("text"), typedEl = $("typed"), hintEl = $("hint"), wordsEl = $("words"), topicsEl = $("topics"), statusEl = $("status");
+  let seq = 0, shown = null; // shown = the newest response rendered, plus the exact text it answers
+
+  const pct = (p) => (p > 0.99 ? ">99%" : p < 0.01 ? "<1%" : Math.round(p * 100) + "%");
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+
+  // The rest of the top word, or null when there is nothing safe to complete: the suggestion must answer
+  // exactly the current text, and the caret must sit at its end.
+  function completion() {
+    const s = shown, v = ta.value;
+    if (!s || s.text !== v || !s.words.length || ta.selectionStart !== v.length || ta.selectionEnd !== v.length) return null;
+    return s.words[0][0].slice(s.prefix.length);
+  }
+
+  function renderGhost() {
+    typedEl.textContent = ta.value;
+    // zero-width space = a break point, so "sympt|oms" can't wrap as one word and drag "sympt" off its line
+    const rest = completion();
+    hintEl.textContent = rest ? "\u200b" + rest : "";
+  }
+
+  function render() {
+    renderGhost();
+    const s = shown;
+    wordsEl.replaceChildren(...(s.words.length
+      ? s.words.map(([w, p], i) => {
+          const li = el("li", i ? "" : "top");
+          li.append(el("span", "word", w), el("span", "pct", pct(p)));
+          if (!i) li.append(el("kbd", "", "Tab"));
+          return li;
+        })
+      : [el("li", "empty", s.prefix ? `No known word starts with “${s.prefix}”` : "Start a word to see completions")]));
+    topicsEl.classList.toggle("dim", s.known === 0);
+    topicsEl.replaceChildren(...s.topics.map(([label, p]) => {
+      const li = el("li"), track = el("span", "track"), bar = el("span", "bar");
+      bar.style.width = (p * 100).toFixed(1) + "%";
+      track.append(bar);
+      li.append(el("span", "label", label), track, el("span", "pct", pct(p)));
+      li.title = `${label}: ${(p * 100).toFixed(1)}%`;
+      return li;
+    }));
+    statusEl.textContent = s.known
+      ? `${s.known} known word${s.known > 1 ? "s" : ""} · updated in ${s.ms.toFixed(1)} ms`
+      : "No known words yet: topic odds are the training-set class frequencies.";
+  }
+
+  async function predict() {
+    const text = ta.value, id = ++seq, t0 = performance.now();
+    try {
+      const r = await fetch("/predict", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
+      if (!r.ok) throw new Error(r.status === 413 ? "text is over 100 KB" : `HTTP ${r.status}`);
+      const res = await r.json();
+      if (id !== seq) return; // a newer keystroke's request is in flight: never show stale suggestions
+      shown = { text, ms: performance.now() - t0, ...res };
+      render();
+    } catch (err) {
+      if (id === seq) statusEl.textContent = `No prediction (${err.message}). Is dashboard/server.py running?`;
+    }
+  }
+
+  function grow() {
+    ta.style.height = "auto";
+    ta.style.height = ta.scrollHeight + "px";
+  }
+
+  ta.addEventListener("input", () => { grow(); renderGhost(); predict(); });
+  ta.addEventListener("keydown", (e) => {
+    if (e.key !== "Tab" || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey || e.isComposing) return;
+    const rest = completion();
+    if (rest === null) return; // nothing to accept: Tab keeps its normal focus behaviour
+    e.preventDefault();
+    ta.setRangeText(rest + " ", ta.value.length, ta.value.length, "end");
+    ta.dispatchEvent(new Event("input"));
+  });
+  for (const ev of ["keyup", "click"]) ta.addEventListener(ev, renderGhost);
+  document.addEventListener("selectionchange", renderGhost);
+  window.addEventListener("resize", grow);
+  grow();
+  predict();
+</script>
+</body>
+</html>
